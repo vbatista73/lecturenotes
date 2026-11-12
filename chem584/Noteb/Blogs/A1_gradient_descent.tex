@@ -1,0 +1,506 @@
+% =============================================================
+%  How a Computer Learns a Curve: Gradient Descent from Scratch
+%  Series A: Machine Learning Basics for Chemists, Post 1
+%  Compiles with pdfLaTeX on Overleaf (no extra files needed).
+% =============================================================
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[most]{tcolorbox}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+
+% ---------- macros ----------
+\newcommand{\T}{\mathsf{T}}
+\newcommand{\vth}{\bm{\theta}}
+\newcommand{\yhat}{\hat{y}}
+\newcommand{\grad}{\nabla}
+\DeclareMathOperator{\argmin}{arg\,min}
+
+% ---------- Colab link: edit this ONE line after you upload the notebook to GitHub ----------
+\newcommand{\colaburl}{https://colab.research.google.com/github/YOUR-USER/YOUR-REPO/blob/main/notebooks/A1_gradient_descent_colab.ipynb}
+\newcommand{\colabbutton}{%
+  \href{\colaburl}{\tcbox[on line,colback=orange!15,colframe=orange!70!black,boxrule=0.6pt,arc=3pt,
+    left=4pt,right=4pt,top=1pt,bottom=1pt]{\small\textbf{$\blacktriangleright$ Open in Google Colab}}}}
+\newcommand{\tryit}[1]{\par\vspace{0.3em}\noindent
+  \fcolorbox{orange!70!black}{orange!8}{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{%
+  \small $\blacktriangleright$ \textbf{Run it.} #1}}\par\vspace{0.3em}}
+
+% ---------- code listings ----------
+\definecolor{codebg}{RGB}{246,246,248}
+\definecolor{codecomment}{RGB}{90,110,90}
+\definecolor{codekw}{RGB}{30,60,160}
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecomment}\itshape,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{black!15},
+  breaklines=true,
+  columns=fullflexible,
+  showstringspaces=false,
+  xleftmargin=0.5em,
+  xrightmargin=0.5em,
+  aboveskip=0.8em,
+  belowskip=0.8em
+}
+
+% ---------- boxes ----------
+\tcbuselibrary{skins,breakable}
+\newtcolorbox{keybox}[1][]{
+  enhanced, breakable, colback=blue!4, colframe=blue!50!black,
+  fonttitle=\bfseries, title={#1}, boxrule=0.6pt, arc=2pt
+}
+\newtcolorbox{mathbox}[1][]{
+  enhanced, breakable, colback=black!3, colframe=black!45,
+  fonttitle=\bfseries, title={#1}, boxrule=0.6pt, arc=2pt
+}
+
+% ---------- title ----------
+\title{\textbf{How a Computer Learns a Curve:}\\[0.2em]
+       Gradient Descent from Scratch}
+\author{\textit{Series A: Machine Learning Basics for Chemists --- Post 1 of 7}}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{center}
+\small
+About 15 minutes of reading, plus the notebook.\\
+\textbf{Prerequisites:} basic Python and high-school algebra. The math supplement covers the rest.\\
+\textbf{Companion notebook:} \texttt{A1\_gradient\_descent\_colab.ipynb}\\[0.4em]
+\colabbutton\quad {\footnotesize (no installation; see Section~\ref{sec:runit})}
+\end{center}
+
+\vspace{0.5em}
+\hrule
+\vspace{0.5em}
+
+% =============================================================
+\section{The question}
+% =============================================================
+Nobody gives a chemistry model the equation it is supposed to learn. We hand it examples and ask it to find the pattern. Gradient descent is the engine behind that, in everything from a four-parameter curve fit to a neural network with billions of parameters.
+
+To keep it concrete, we will teach a computer to approximate $y=\sin(x)$ using only sample pairs $(x,y)$ and a flexible curve with four adjustable numbers. We never tell it the answer.
+
+% =============================================================
+\section{Step 1: A model is a rule with adjustable knobs}
+% =============================================================
+A model turns an input into a prediction $\yhat$ (``y-hat''). A straight line, $\yhat=b+mx$, has two knobs, but it cannot bend. To get a curve, we use powers of the input. We also rescale $x$ to $z=x/\pi$, so $z$ runs from $-1$ to $1$ and the powers stay manageable:
+\begin{equation}
+  \yhat=\theta_0+\theta_1 z+\theta_2 z^2+\theta_3 z^3 .
+  \label{eq:cubic}
+\end{equation}
+This is a cubic polynomial. The four numbers $\theta_0,\dots,\theta_3$ are the \textbf{parameters} (the knobs). Learning means finding good values for them.
+
+The input is expanded into a row of features, $[1,\,z,\,z^2,\,z^3]$. The leading $1$ is not decoration. It multiplies $\theta_0$, the intercept, which lets the curve shift up and down. Without it, the curve would be forced through zero at $z=0$.
+
+\begin{keybox}[Worked example]
+At $z=2/3$ the row is $[1,\,2/3,\,4/9,\,8/27]$. With $\vth=(1,2,0,-1)$:
+\[
+  \yhat = 1 + 2\!\left(\tfrac23\right) + 0 - \tfrac{8}{27} \approx \mathbf{2.037}.
+\]
+\end{keybox}
+
+Stack one such row per data point and you get the \textbf{design matrix} $X$, with shape $(N,4)$:
+\[
+  X=\begin{bmatrix}
+    1 & z_1 & z_1^2 & z_1^3\\
+    \vdots & \vdots & \vdots & \vdots\\
+    1 & z_N & z_N^2 & z_N^3
+  \end{bmatrix}.
+\]
+All $N$ predictions then come from one matrix product, $\hat{\mathbf y}=X\vth$. The notebook uses $N=2000$ points spread over $[-\pi,\pi]$.
+\tryit{Notebook \S0--1. Build $X$, print the row for $z=2/3$ (you should get $2.037$), then change only $\theta_0$ and watch the prediction at $z=0$ move.}
+
+% =============================================================
+\section{Step 2: Score the model with one number}
+% =============================================================
+To improve a model, we need to measure how wrong it is. For each point, the \textbf{residual} is $r_i=\yhat_i-y_i$. Squaring makes errors positive and punishes big misses more than small ones. Averaging gives the \textbf{mean squared error} (MSE).
+
+The notebook adds a small penalty on the size of the coefficients, called \textbf{ridge regularization}. It nudges the model toward simpler curves when two fits are about equally good:
+\begin{equation}
+  L(\vth)=\frac1N\lVert X\vth-\mathbf y\rVert_2^2+\lambda\lVert\vth\rVert_2^2,
+  \qquad \lambda=10^{-3}.
+  \label{eq:loss}
+\end{equation}
+$L$ is a single number, so ``learning'' becomes ``make $L$ small.'' With the notebook's random starting point, the initial loss is about \textbf{2.79}.
+\tryit{Notebook \S2. Confirm the initial loss, then change \texttt{SEED} to see how much the starting point matters.}
+
+% =============================================================
+\section{Step 3: Follow the slope downhill}
+% =============================================================
+Here is the idea in one dimension. Take $L(w)=(w-2)^2$, which is smallest at $w=2$. Its slope is $dL/dw=2(w-2)$.
+
+\begin{itemize}[nosep]
+  \item At $w=0$ the slope is $-4$. Loss falls as $w$ \emph{increases}, so we move right.
+  \item At $w=4$ the slope is $+4$. Loss falls as $w$ \emph{decreases}, so we move left.
+\end{itemize}
+
+In both cases the move is \textbf{opposite to the slope}. That gives the whole algorithm:
+\begin{equation}
+  w\leftarrow w-\eta\,\frac{dL}{dw}.
+\end{equation}
+The \textbf{learning rate} $\eta$ sets the step size. Starting from $w=0$ with $\eta=0.1$, one step gives $w=0-0.1\cdot(-4)=0.4$, and the loss drops from $4$ to $2.56$.
+\tryit{Notebook \S3. Watch the one-knob problem converge, then set \texttt{eta} to $0.5$, $1.0$ and $1.1$ and predict what happens before you rerun.}
+
+With four parameters, there are four slopes, one per knob. Together they form the \textbf{gradient} $\grad L$. The update is the same, applied to all knobs at once:
+\begin{equation}
+  \vth\leftarrow\vth-\eta\,\grad L(\vth).
+  \label{eq:update}
+\end{equation}
+For our loss, the chain rule gives a compact formula (derived in \hyperref[sec:grad]{Supplement S1}):
+\begin{equation}
+  \grad L=\frac{2}{N}X^{\T}(X\vth-\mathbf y)+2\lambda\vth .
+  \label{eq:grad}
+\end{equation}
+In words, each parameter's slope comes from how its feature column lines up with the current errors.
+
+% =============================================================
+\section{Step 4: Don't trust a formula you haven't tested}
+% =============================================================
+Hand-derived gradients are easy to get subtly wrong. The notebook checks ours with a \textbf{central finite difference}. Nudge one parameter up and down by a tiny $h$ and measure how the loss changes:
+\begin{equation}
+  \frac{\partial L}{\partial\theta_j}\approx
+  \frac{L(\vth+h\mathbf e_j)-L(\vth-h\mathbf e_j)}{2h}.
+\end{equation}
+If this matches the formula to many digits, the formula is probably right. You can use this check on any gradient you ever write, and it is the cheapest debugging tool in the field.
+\tryit{Notebook \S4. Compare the formula with the finite difference at the starting point, then at a different random $\vth$.}
+
+% =============================================================
+\section{Step 5: Train}
+% =============================================================
+Here is the core loop in NumPy. This is all of gradient descent:
+\begin{lstlisting}
+theta = initial_theta.copy()
+for step in range(2500):
+    gradient = 2.0 * (H @ theta - b)   # same gradient, precomputed for speed
+    theta -= learning_rate * gradient
+\end{lstlisting}
+(\texttt{H} and \texttt{b} are precomputed from the data so that each step is cheap. They give exactly the gradient above.)
+
+Running the notebook's setup (seed 2026) gives these results:
+
+\begin{center}
+\begin{tabular}{@{}rcc@{}}
+\toprule
+Steps & Loss above the best possible & Distance to the best $\vth$\\
+\midrule
+10   & $0.33$ & $4.1$\\
+100  & $0.017$ & $0.97$\\
+500  & $5\times10^{-8}$ & $0.0017$\\
+1000 & $7\times10^{-15}$ & $6\times10^{-7}$\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Most of the improvement comes early. The tail then shrinks steadily and geometrically, which shows up as a straight line on a log plot. Plotting this ``loss above optimum'' against steps is the standard \textbf{learning curve}.
+
+The final loss is about $0.0192$, not zero. A cubic cannot reproduce sine over a whole period, so that gap comes from the model and not from the optimizer. This distinction between the optimizer not having converged and the model not being able to fit matters throughout machine learning.
+\tryit{Notebook \S5. Reproduce the table above, and plot the learning curve on a log axis.}
+
+% =============================================================
+\section{Step 6: The learning rate is a dial with three regimes}
+% =============================================================
+The notebook picks a baseline $\eta_0\approx0.446$ automatically (explained in \hyperref[sec:conv]{Supplement S3}). Then it tries $0.1\eta_0$, $\eta_0$, and $2.2\eta_0$ for 150 steps from the same starting point:
+
+\begin{center}
+\begin{tabular}{@{}lcl@{}}
+\toprule
+Learning rate & Loss above optimum after 150 steps & Behavior\\
+\midrule
+$0.1\times\eta_0$ & $0.27$ & Safe but slow, still far away\\
+$1.0\times\eta_0$ & $0.0034$ & Fast and stable\\
+$2.2\times\eta_0$ & $\sim10^{24}$ & \textbf{Diverges}; each step overshoots further\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+This tradeoff is why learning rates are among the first things tuned in practice. Too small wastes compute, and too large blows up. \hyperref[sec:conv]{Supplement S3} shows why the dividing line sits at $2\eta_0$ for this problem.
+\tryit{Notebook \S7. Run all three rates, then try $1.9\,\eta_0$ and $2.0\,\eta_0$ to find where the boundary actually is.}
+
+% =============================================================
+\section{Step 7: Let PyTorch compute the gradient}
+% =============================================================
+Writing gradients by hand works for four parameters, but not for a network with millions. PyTorch's \textbf{autograd} records the operations that produce the loss and applies the chain rule backwards automatically:
+\begin{lstlisting}
+theta = torch.nn.Parameter(torch.tensor(theta_start, dtype=torch.float64))
+optimizer = torch.optim.SGD([theta], lr=learning_rate)
+
+for step in range(2500):
+    optimizer.zero_grad(set_to_none=True)  # clear old gradients
+    loss = pytorch_loss(theta)             # forward pass
+    loss.backward()                        # backward pass: fills theta.grad
+    optimizer.step()                       # theta -= lr * theta.grad
+\end{lstlisting}
+
+Two things to notice:
+\begin{enumerate}[nosep]
+  \item \textbf{The math is unchanged.} The notebook confirms that PyTorch's gradient matches our hand-derived one to about $10^{-10}$. Autograd is the chain rule, applied automatically.
+  \item \textbf{\texttt{zero\_grad()} is not optional.} PyTorch \emph{adds} new gradients to old ones by default. Forgetting to clear them is one of the most common beginner bugs.
+\end{enumerate}
+
+The notebook also tries \textbf{Adam}, which adapts each parameter's step size using running averages of the gradient. It converges here with \texttt{lr = 0.05} in 1200 steps. Because we use all 2000 points per step, ``SGD'' in this notebook is ordinary gradient descent. True \emph{stochastic} gradient descent uses random subsets of the data per step.
+\tryit{Notebook \S8. Confirm that autograd matches the hand-derived gradient, then train with SGD and Adam.}
+
+% =============================================================
+\section{Step 8: Check against the exact answer}
+% =============================================================
+This problem is special: the model is linear in its parameters and the loss is quadratic. We can set the gradient to zero and solve exactly, with no iteration:
+\begin{equation}
+  H\vth^\ast=b,\qquad H=\tfrac1N X^{\T}X+\lambda I,\quad b=\tfrac1N X^{\T}\mathbf y .
+\end{equation}
+The exact optimum is
+\[
+  \vth^\ast\approx(0.0,\;2.572,\;0.0,\;-2.708),\qquad L(\vth^\ast)\approx0.01917 .
+\]
+All three gradient methods land on it. That is the use of the closed form here: it is an \textbf{answer key for the optimizer}. Most real problems have no such answer key, which is why gradient descent matters.
+
+Two details in the answer are worth noticing:
+\begin{itemize}[nosep]
+  \item \textbf{$\theta_0$ and $\theta_2$ come out essentially zero.} Sine is an odd function and our grid is symmetric about zero, so only odd powers of $z$ are needed. The optimizer found that symmetry on its own.
+  \item \textbf{Converting back to the original variable $x$.} Because $z=x/\pi$, the coefficient on $x^j$ is $\theta_j/\pi^j$. The fitted curve is
+  \[
+    \sin x\approx 0.8188\,x-0.0873\,x^3 .
+  \]
+  Compare that to the Taylor series, $x-x^3/6\approx x-0.167\,x^3$. The fitted cubic is \emph{flatter} near zero and does better across the whole interval, because it minimizes error over $[-\pi,\pi]$ and not only near the origin.
+\end{itemize}
+
+The notebook ends with \texttt{nn.Linear}, which gives exactly the same cubic model in PyTorch's neural-network vocabulary. This is a first look at how the layers in the next post are built.
+\tryit{Notebook \S6. Compare the exact $\vth^\ast$ with your trained result, and check the fitted cubic against the Taylor series.}
+
+% =============================================================
+\section{Run it yourself in Colab}
+\label{sec:runit}
+% =============================================================
+Everything above can be reproduced in your browser with no installation. Google Colab already has NumPy, Matplotlib and PyTorch.
+
+\begin{keybox}[Three ways to run it]
+\begin{enumerate}[nosep]
+  \item \textbf{One click.} Press \colabbutton\ (the link points to the notebook in the series repository). Then choose \emph{Runtime $\to$ Run all}.
+  \item \textbf{Upload the file.} In Colab, choose \emph{File $\to$ Upload notebook} and select \texttt{A1\_gradient\_descent\_colab.ipynb}. This works even before any repository exists.
+  \item \textbf{Paste one cell.} Copy the script in Section~\ref{sec:onecell} into a new Colab cell and run it. It needs only NumPy.
+\end{enumerate}
+\end{keybox}
+
+\subsection{Where each step lives in the notebook}
+The notebook follows the post, with one change in order: it computes the exact answer (\S6) before the learning-rate experiment (\S7), so that it can measure ``loss above optimum.''
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{6.6cm}@{}}
+\toprule
+Post & Notebook & What you should see\\
+\midrule
+Step 1 & \S0--1 & Row $[1,\,0.667,\,0.444,\,0.296]$ and prediction $2.037$\\
+Step 2 & \S2 & Initial loss $2.79$\\
+Step 3 & \S3 & Toy problem: $w=0.4$ after one step, $1.86$ after twelve\\
+Step 4 & \S4 & Formula and finite difference agree to about $10^{-9}$\\
+Step 5 & \S5 & The loss-above-optimum table, and a straight line on the log plot\\
+Step 6 & \S7 & Slow, fast, and diverging runs\\
+Step 7 & \S8 & Autograd gradient equals ours to about $10^{-10}$\\
+Step 8 & \S6 & $\vth^\ast\approx(0,\,2.572,\,0,\,-2.708)$ and $0.8188\,x-0.0873\,x^3$\\
+Exercises & \S9 & Starter code for the exercises below\\
+Self-check & \S10 & ``All checks passed''\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Section~10 of the notebook asserts that your run reproduces the numbers in this post. If it prints \texttt{All checks passed}, your environment matches.
+
+\subsection{The whole experiment in one cell}
+\label{sec:onecell}
+This script uses only NumPy. It builds the data, trains with gradient descent, compares the three learning rates, and checks the result against the exact solution.
+
+\begin{lstlisting}
+import numpy as np
+
+N, LAM = 2000, 1e-3
+x = np.linspace(-np.pi, np.pi, N); y = np.sin(x); z = x / np.pi
+X = np.polynomial.polynomial.polyvander(z, 3)           # rows [1, z, z^2, z^3]
+theta0 = np.random.default_rng(2026).standard_normal(4)  # random starting knobs
+
+loss = lambda t: np.mean((X @ t - y) ** 2) + LAM * np.sum(t ** 2)
+grad = lambda t: 2 / N * X.T @ (X @ t - y) + 2 * LAM * t
+
+H = X.T @ X / N + LAM * np.eye(4); b = X.T @ y / N
+eta = 1 / np.linalg.eigvalsh(2 * H).max()                # baseline learning rate
+star = np.linalg.solve(H, b)                             # exact answer key
+
+for m in (0.1, 1.0, 2.2):                                # try three learning rates
+    t = theta0.copy()
+    for _ in range(150):
+        t = t - m * eta * grad(t)
+    print(f"{m:>4} x eta0: loss above optimum = {loss(t) - loss(star):.3e}")
+
+t = theta0.copy()
+for _ in range(2500):                                    # full training run
+    t = t - eta * grad(t)
+print("initial loss     :", round(loss(theta0), 3))
+print("trained theta    :", np.round(t, 4))
+print("exact theta*     :", np.round(star, 4))
+print("sin(x) ~ %.4f x %+.4f x^3" % (star[1] / np.pi, star[3] / np.pi**3))
+\end{lstlisting}
+
+Expected output (a $-0.0$ may print instead of $0.0$):
+\begin{lstlisting}[language={},basicstyle=\ttfamily\small]
+ 0.1 x eta0: loss above optimum = 2.657e-01
+ 1.0 x eta0: loss above optimum = 3.395e-03
+ 2.2 x eta0: loss above optimum = 1.235e+24
+initial loss     : 2.791
+trained theta    : [-0.      2.5724 -0.     -2.7083]
+exact theta*     : [ 0.      2.5724 -0.     -2.7083]
+sin(x) ~ 0.8188 x -0.0873 x^3
+\end{lstlisting}
+
+\subsection{Experiments worth five minutes}
+\begin{itemize}[nosep]
+  \item \textbf{Find the cliff.} Replace \texttt{(0.1, 1.0, 2.2)} with \texttt{(1.9, 1.99, 2.01)}. Theory says the boundary is exactly $2\,\eta_0$. How sharp is it in practice?
+  \item \textbf{Change the target.} Replace \texttt{np.sin} with \texttt{np.cos} or \texttt{np.abs}. Which coefficients become zero, and does the fitted loss get larger or smaller?
+  \item \textbf{Change the degree.} Pass \texttt{5} instead of \texttt{3} to \texttt{polyvander} and use \texttt{rng.standard\_normal(6)} and \texttt{np.eye(6)}. How does the condition number change?
+  \item \textbf{Remove the rescaling.} Use \texttt{x} instead of \texttt{z} in the design matrix. This is Exercise~4, and the condition number should jump from about $64$ to about $325$.
+\end{itemize}
+
+% =============================================================
+\section{What to take away}
+% =============================================================
+\begin{keybox}[Summary]
+\begin{itemize}[nosep]
+  \item Learning is \textbf{minimizing a loss} over adjustable parameters.
+  \item Gradient descent follows the slope downhill, $\vth\leftarrow\vth-\eta\grad L$.
+  \item The learning rate has a stable range, and too large a rate diverges.
+  \item Verify gradients numerically, and verify optimizers against an exact solution when one exists.
+  \item Autograd computes the same gradient you would derive by hand.
+  \item A nonzero final loss may reflect the model's limits and not a failure of the optimizer.
+\end{itemize}
+\end{keybox}
+
+\textbf{Next in the series (A2):} stack these units into a neural network and see why the choice of activation function matters.
+
+\clearpage
+% =============================================================
+\section*{Supplementary Reading: The Math}
+\addcontentsline{toc}{section}{Supplementary Reading: The Math}
+% =============================================================
+\textit{Prerequisites: partial derivatives and the chain rule (Toolbox T1) and eigenvalues of symmetric matrices (Toolbox T2).}
+
+\phantomsection\label{sec:grad}
+\subsection*{S1. Deriving the gradient}
+Write the loss with indices. With $r_i=\sum_j X_{ij}\theta_j-y_i$,
+\[
+  L=\frac1N\sum_{i=1}^N r_i^2+\lambda\sum_j\theta_j^2 .
+\]
+Since $\partial r_i/\partial\theta_k=X_{ik}$, the chain rule gives
+\[
+  \frac{\partial L}{\partial\theta_k}
+  =\frac1N\sum_i 2r_iX_{ik}+2\lambda\theta_k
+  =\frac2N\sum_i X_{ik}r_i+2\lambda\theta_k .
+\]
+The sum $\sum_i X_{ik}r_i$ is the $k$-th component of $X^{\T}\mathbf r$, so
+\begin{mathbox}
+\[
+  \grad L=\frac2N X^{\T}(X\vth-\mathbf y)+2\lambda\vth .
+\]
+\end{mathbox}
+
+\subsection*{S2. The loss is a quadratic bowl}
+Expand the loss, using $\lVert v\rVert^2=v^{\T}v$:
+\[
+  L=\vth^{\T}H\vth-2b^{\T}\vth+\tfrac1N\mathbf y^{\T}\mathbf y,
+  \qquad H=\tfrac1N X^{\T}X+\lambda I,\quad b=\tfrac1N X^{\T}\mathbf y .
+\]
+Differentiating gives $\grad L=2(H\vth-b)$, which matches S1. The \textbf{Hessian} (matrix of second derivatives) is the constant matrix $A=2H$.
+
+\paragraph{Convexity.} For any vector $v$, $v^{\T}X^{\T}Xv=\lVert Xv\rVert^2\ge0$, so $X^{\T}X/N$ is positive semidefinite. Adding $\lambda I$ shifts every eigenvalue up by $\lambda$, so every eigenvalue of $H$ is at least $\lambda>0$. Therefore $H$ is positive definite, $L$ is strictly convex, and it has exactly one minimum with no local traps.
+
+\paragraph{Closed form.} Setting $\grad L=0$ gives $H\vth^\ast=b$. Because $H$ is positive definite, it is invertible, and the minimizer is unique. Solving the linear system is preferred over forming $H^{-1}$, because it is faster and more numerically stable.
+
+\paragraph{Caveat.} When $\lambda$ is tiny and the degree is high, $X^{\T}X$ is badly conditioned, and QR or SVD least-squares solvers are safer than the normal equations.
+
+\phantomsection\label{sec:conv}
+\subsection*{S3. When does gradient descent converge, and how fast?}
+The update is $\vth_{k+1}=\vth_k-\eta\cdot2(H\vth_k-b)$. Let $\mathbf e_k=\vth_k-\vth^\ast$. Using $H\vth^\ast=b$,
+\[
+  \mathbf e_{k+1}=(I-\eta A)\,\mathbf e_k
+  \quad\Longrightarrow\quad
+  \mathbf e_k=(I-\eta A)^k\mathbf e_0 .
+\]
+Since $A$ is symmetric, write $A=Q\Lambda Q^{\T}$ with eigenvalues $\mu_{\min}=\mu_1\le\dots\le\mu_{\max}$, all positive. In the eigenbasis each component evolves independently:
+\[
+  (Q^{\T}\mathbf e_k)_i=(1-\eta\mu_i)^k\,(Q^{\T}\mathbf e_0)_i .
+\]
+
+\paragraph{Stability condition.} Every component decays if and only if $|1-\eta\mu_i|<1$ for all $i$, which means
+\begin{equation}
+  0<\eta<\frac{2}{\mu_{\max}} .
+\end{equation}
+This explains the experiment. The notebook sets $\eta_0=1/\mu_{\max}\approx0.446$, so $2.2\,\eta_0$ exceeds $2/\mu_{\max}$. The largest-eigenvalue component is multiplied each step by $|1-2.2|=1.2$, and error grows geometrically. That is the divergence seen above.
+
+\paragraph{Rate.} With $\eta=1/\mu_{\max}$, the slowest component (the smallest eigenvalue) shrinks by a factor $1-\mu_{\min}/\mu_{\max}=1-1/\kappa$ per step, where $\kappa=\mu_{\max}/\mu_{\min}$ is the \textbf{condition number}. For this problem the eigenvalues of $A$ are about $0.035$, $0.161$, $0.923$ and $2.244$, so $\kappa\approx63.7$ and the slow mode shrinks by about $0.984$ per step.
+
+The loss excess is quadratic in the error, since $L(\vth)-L(\vth^\ast)=\mathbf e^{\T}H\mathbf e=\tfrac12\mathbf e^{\T}A\mathbf e$. So it contracts roughly like $(0.984)^{2k}$. After 500 steps that is about $10^{-7}$, consistent with the $5\times10^{-8}$ in the table.
+
+\paragraph{Practical lesson.} The optimal rate is the largest stable one, but convergence speed is limited by $\kappa$, the ratio of the steepest to the flattest direction of the bowl. Features on very different scales (one reason we use $z=x/\pi$) inflate $\kappa$ and slow training. Normalizing features is cheap insurance.
+
+\paragraph{Why $0.1\,\eta_0$ is slow.} Every factor becomes $1-0.1\mu_i/\mu_{\max}$, so the slow mode shrinks by about $0.9984$ per step. After 150 steps it has barely moved, matching the leftover excess of $0.27$.
+
+\subsection*{S4. What the ridge term does mathematically}
+The penalty $\lambda\lVert\vth\rVert^2$ adds $\lambda$ to every eigenvalue of $X^{\T}X/N$. This has three effects:
+\begin{enumerate}[nosep]
+  \item It guarantees $H$ is invertible, even if features are redundant.
+  \item It reduces $\kappa$ when $X^{\T}X/N$ has tiny eigenvalues, which speeds convergence.
+  \item It biases coefficients toward zero. The exact solution is $\vth^\ast=(X^{\T}X/N+\lambda I)^{-1}X^{\T}\mathbf y/N$, which \emph{shrinks} the unregularized least-squares coefficients along weakly constrained directions.
+\end{enumerate}
+The same penalty also corresponds to a Gaussian prior on $\vth$, a link we will develop in the Bayesian regression post (C1). Here $\lambda=10^{-3}$ is small, so the effect on the fit is tiny, but the formulas are exact.
+
+\subsection*{S5. Stochastic gradient descent in one equation}
+The loss is an average over data points, $L=\frac1N\sum_i\ell_i(\vth)+\lambda\lVert\vth\rVert^2$. The full gradient is an average of per-example gradients, $\grad\ell_i=2r_i\mathbf x_i$, where $\mathbf x_i$ is the $i$-th row of $X$. Pick a random mini-batch $B$ and use its gradient instead:
+\[
+  g_B=\frac1{|B|}\sum_{i\in B}\grad\ell_i+2\lambda\vth .
+\]
+Then $\mathbb E[g_B]=\grad L$: the mini-batch gradient is an \emph{unbiased estimate} of the true gradient. It is cheaper to compute and noisy, and the noise level falls as $1/|B|$. With noise present, a constant $\eta$ makes $\vth$ wander around the minimum, so practical SGD often decays $\eta$ over time. Our notebook uses the whole data set each step ($|B|=N$), which removes the noise.
+
+\subsection*{S6. How good is a finite difference?}
+Taylor-expand $L$ about $\vth$ along the direction $\mathbf e_j$:
+\[
+  L(\vth\pm h\mathbf e_j)=L\pm h\,\partial_jL+\tfrac{h^2}{2}\partial_j^2L\pm\tfrac{h^3}{6}\partial_j^3L+\cdots
+\]
+Subtracting the two and dividing by $2h$ cancels the even terms:
+\[
+  \frac{L(\vth+h\mathbf e_j)-L(\vth-h\mathbf e_j)}{2h}
+  =\partial_jL+\frac{h^2}{6}\partial_j^3L+O(h^4).
+\]
+So the truncation error is $O(h^2)$. Our loss is quadratic, so its third derivative is zero and the central difference is \emph{exact} up to rounding. Shrinking $h$ further eventually makes things worse, because floating-point subtraction of nearly equal numbers loses digits, with roundoff error of order $\varepsilon/h$. That is why the notebook uses double precision (\texttt{float64}) and $h=10^{-6}$, near the sweet spot of roughly $\varepsilon^{1/3}$.
+
+\subsection*{S7. What autograd is doing}
+For our loss, the computation is a chain: $\vth\to\mathbf p=X\vth\to\mathbf r=\mathbf p-\mathbf y\to L$. Reverse-mode autodiff walks it backward, multiplying local derivatives:
+\begin{align*}
+  \partial L/\partial\mathbf r &= \tfrac2N\mathbf r &&\text{(from the mean of squares)}\\
+  \partial L/\partial\mathbf p &= \partial L/\partial\mathbf r &&\text{(subtraction passes the gradient through)}\\
+  \partial L/\partial\vth &= X^{\T}\,\partial L/\partial\mathbf p &&\text{(matrix--vector product, transposed on the way back)}
+\end{align*}
+plus the penalty's contribution $2\lambda\vth$. The sum is exactly the formula in S1. Autograd derives it mechanically, and the same mechanism scales to deep networks, which we use in A2.
+
+\subsection*{Check yourself}
+\begin{enumerate}
+  \item \textbf{By hand.} For $L(w)=(w-2)^2$ with $\eta=0.1$, show that $w_k-2=0.8^k(w_0-2)$. How many steps until the error is under $1\%$ of its starting value? \textit{(Hint: solve $0.8^k<0.01$. Verify in the notebook's B3 cell.)}
+  \item \textbf{Stability.} For $L(w)=(w-2)^2$, what range of $\eta$ converges? What happens at $\eta=1$? At $\eta=1.1$? Connect your answer to the condition $\eta<2/\mu_{\max}$.
+  \item \textbf{Notebook check.} Use the notebook's \texttt{numpy\_gradient} and \texttt{finite\_difference\_gradient} to verify the gradient at a \emph{different} random $\vth$. Then try \texttt{h = 1e-12} and explain why the agreement gets worse.
+  \item \textbf{Conditioning.} Rebuild the design matrix using $x$ directly instead of $z=x/\pi$, so the features are $[1,x,x^2,x^3]$. Compute the eigenvalues of the Hessian and the new condition number $\kappa$. How many steps does GD with $\eta=1/\mu_{\max}$ now need to reach the same excess loss as before?
+\end{enumerate}
+
+\end{document}
